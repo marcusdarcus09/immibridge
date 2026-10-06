@@ -33,16 +33,17 @@ struct ContentView: View {
                 .padding(28)
             }
             .safeAreaInset(edge: .bottom) {
-                VStack(spacing: 12) {
+                // Buttons stacked in a narrow column beside the progress strip,
+                // so the bottom area stays short.
+                HStack(alignment: .top, spacing: 12) {
                     runBackupNowButton
-                        .frame(width: 420)
-                        .frame(maxWidth: .infinity)
+                        .frame(width: 200)
 
                     progressStrip
                 }
                 .padding(.horizontal, 24)
-                .padding(.top, 12)
-                .padding(.bottom, 18)
+                .padding(.top, 10)
+                .padding(.bottom, 12)
                 .background {
                     Rectangle()
                         .fill(.thinMaterial)
@@ -780,24 +781,27 @@ private extension ContentView {
     }
 
     var runBackupNowButton: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 8) {
             // Session info banner when resumable session exists
             if model.hasResumableSession && !model.isRunning {
-                HStack(spacing: 8) {
+                HStack(spacing: 6) {
                     Image(systemName: "clock.arrow.circlepath")
                         .foregroundStyle(DesignSystem.Colors.accentPrimary)
                     Text(model.resumableSessionInfo)
-                        .font(.system(.subheadline, design: .rounded))
+                        .font(.system(.caption, design: .rounded))
                         .foregroundStyle(DesignSystem.Colors.textSecondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .frame(maxWidth: .infinity)
                 .background(DesignSystem.Colors.accentPrimary.opacity(0.15))
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
 
-            // Button state machine
-            HStack(spacing: 12) {
+            // Button state machine, stacked vertically
+            VStack(spacing: 8) {
                 if model.isRunning {
                     if model.isPaused {
                         // Paused mid-session: Resume + Stop
@@ -806,14 +810,14 @@ private extension ContentView {
                         } label: {
                             Text("Resume")
                         }
-                        .buttonStyle(PrimaryButtonStyle(isDestructive: false, height: 56))
+                        .buttonStyle(PrimaryButtonStyle(isDestructive: false, height: 32))
 
                         Button {
                             model.cancel()
                         } label: {
                             Text("Stop")
                         }
-                        .buttonStyle(SecondaryButtonStyle(isDestructive: true, height: 56))
+                        .buttonStyle(SecondaryButtonStyle(isDestructive: true, height: 32))
                     } else {
                         // Running: Stop (resumable)
                         Button {
@@ -821,7 +825,7 @@ private extension ContentView {
                         } label: {
                             Text("Stop")
                         }
-                        .buttonStyle(SecondaryButtonStyle(isDestructive: true, height: 56))
+                        .buttonStyle(SecondaryButtonStyle(isDestructive: true, height: 32))
                         .help("Stops after the current item and saves state so you can resume later.")
                     }
                 } else if model.hasResumableSession {
@@ -831,7 +835,7 @@ private extension ContentView {
                     } label: {
                         Text("Resume Backup")
                     }
-                    .buttonStyle(PrimaryButtonStyle(isDestructive: false, height: 56))
+                    .buttonStyle(PrimaryButtonStyle(isDestructive: false, height: 32))
 
                     Button {
                         model.clearSessionState()
@@ -839,7 +843,7 @@ private extension ContentView {
                     } label: {
                         Text("Start Fresh")
                     }
-                    .buttonStyle(SecondaryButtonStyle(isDestructive: false, height: 56))
+                    .buttonStyle(SecondaryButtonStyle(isDestructive: false, height: 32))
                     .disabled(!model.canStart)
 
                     Button {
@@ -847,7 +851,7 @@ private extension ContentView {
                     } label: {
                         Text("Sync Metadata")
                     }
-                    .buttonStyle(SecondaryButtonStyle(isDestructive: false, height: 56))
+                    .buttonStyle(SecondaryButtonStyle(isDestructive: false, height: 32))
                     .disabled(!model.canStart || model.destinationMode == .folder)
                     .help("Sync location, favorites, and other metadata for photos already in Immich (no upload).")
                 } else {
@@ -857,7 +861,7 @@ private extension ContentView {
                     } label: {
                         Text("Sync Metadata")
                     }
-                    .buttonStyle(SecondaryButtonStyle(isDestructive: false, height: 56))
+                    .buttonStyle(SecondaryButtonStyle(isDestructive: false, height: 32))
                     .disabled(!model.canStart || model.destinationMode == .folder)
                     .help("Sync location, favorites, and other metadata for photos already in Immich (no upload).")
 
@@ -866,7 +870,7 @@ private extension ContentView {
                     } label: {
                         Text("Dry Run")
                     }
-                    .buttonStyle(SecondaryButtonStyle(isDestructive: false, height: 56))
+                    .buttonStyle(SecondaryButtonStyle(isDestructive: false, height: 32))
                     .disabled(!model.canStart)
                     .help("Plan-only: checks Immich for existing device asset IDs; does not export or upload.")
 
@@ -875,7 +879,7 @@ private extension ContentView {
                     } label: {
                         Text("Run Backup Now")
                     }
-                    .buttonStyle(PrimaryButtonStyle(isDestructive: false, height: 56))
+                    .buttonStyle(PrimaryButtonStyle(isDestructive: false, height: 32))
                     .disabled(!model.canStart)
                 }
             }
@@ -1039,9 +1043,9 @@ private extension ContentView {
                 }
             }
         }
-        .padding(18)
+        .padding(14)
         .cardBackground()
-        .frame(height: 110)
+        .frame(height: 112)
         .sheet(isPresented: $showErrorsSheet) {
             ErrorsSheetView()
                 .environmentObject(model)
