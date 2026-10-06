@@ -44,6 +44,17 @@ public struct FileBackupResult: Sendable {
     }
 }
 
+/// Name of the destination subfolder for a source folder. Photo Booth keeps its
+/// shots in a folder literally called "Pictures" inside its library package, which
+/// would be a meaningless name on the NAS, so that one is called "Photo Booth".
+func destinationSubfolderName(for root: URL) -> String {
+    if root.lastPathComponent == "Pictures",
+       root.deletingLastPathComponent().lastPathComponent == "Photo Booth Library" {
+        return "Photo Booth"
+    }
+    return root.lastPathComponent
+}
+
 public final class FileBackupExporter {
     public init() {}
 
@@ -110,7 +121,9 @@ public final class FileBackupExporter {
                 let rel = url.path.replacingOccurrences(of: standardizedRoot.path, with: "")
                     .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
                 if rel.isEmpty { continue }
-                files.append((srcRoot: standardizedRoot, fileURL: url, relPath: rel))
+                // Each source folder gets its own subfolder at the destination, so
+                // several sources don't merge into one pile next to the Photos export.
+                files.append((srcRoot: standardizedRoot, fileURL: url, relPath: destinationSubfolderName(for: standardizedRoot) + "/" + rel))
             }
         }
 

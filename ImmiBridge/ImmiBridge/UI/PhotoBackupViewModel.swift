@@ -507,6 +507,9 @@ final class PhotoBackupViewModel: ObservableObject {
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = true
+        // Let the picker open library packages (Photo Booth Library and the like),
+        // which macOS otherwise shows as single files.
+        panel.treatsFilePackagesAsDirectories = true
         panel.prompt = "Add"
         if panel.runModal() == .OK {
             for url in panel.urls {
