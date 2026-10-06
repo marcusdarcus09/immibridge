@@ -1356,6 +1356,12 @@ final class PhotoBackupViewModel: ObservableObject {
                 errorCount += 1
             } else if msg.hasPrefix("ERROR Files:") {
                 errorCount += 1
+            } else if msg.hasPrefix("Folder: exported") {
+                // Folder destination (local or SSH): one file written.
+                uploadedCount += 1
+            } else if msg.hasPrefix("Folder: skipped") {
+                // Already there with identical content, or unchanged since the last run.
+                skippedCount += 1
             } else if msg.contains("skipping upload") {
                 // Messages like "Immich: exists, skipping upload (deviceAssetId)"
                 // or "Immich: duplicate, skipping upload (deviceAssetId)"

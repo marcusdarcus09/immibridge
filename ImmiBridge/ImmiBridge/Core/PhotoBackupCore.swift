@@ -1609,7 +1609,9 @@ public final class PhotoBackupExporter {
             guard let entry = manifest.get(key: key), entry.deletedAt == nil else { return false }
             if entry.signature != signature { return false }
             if entry.relPath != relativePathInDestination(dest, desiredURL) { return false }
-            return destinationFS(for: dest).exists(desiredURL)
+            let present = destinationFS(for: dest).exists(desiredURL)
+            if present { progressWrapped(.message("Folder: skipped unchanged \(desiredURL.lastPathComponent)")) }
+            return present
         }
 
         func upsertManifestIfPossible(key: String, signature: String, desiredURL: URL?) {
@@ -2010,6 +2012,7 @@ public final class PhotoBackupExporter {
                     {
                         let url = dest.appendingPathComponent(entry.relPath, isDirectory: false)
                         if destinationFS(for: dest).exists(url) {
+                            progressWrapped(.message("Folder: skipped unchanged \(url.lastPathComponent)"))
                             // Touch lastSeenRunId for mirror mode safety.
                             try? manifest.upsert(ManifestEntry(
                                 key: key,
@@ -4624,6 +4627,7 @@ private func exportResourceToOutputs(
         keepTmpForImmich = isSSHDestination(desiredFolderURL) && options.immichUpload != nil
         let outcome = try placeTempFile(tmpURL: tmp, desiredURL: desiredFolderURL, collisionPolicy: options.collisionPolicy, copyInsteadOfMove: keepTmpForImmich)
         folderOutcome = outcome
+        reportFolderOutcome(outcome, progress: progress)
         if !keepTmpForImmich {
             switch outcome {
             case .exported(let url):
@@ -4718,6 +4722,7 @@ private func exportEditedImageToOutputs(
         keepTmpForImmich = isSSHDestination(desired) && options.immichUpload != nil
         let outcome = try placeTempFile(tmpURL: tmp, desiredURL: desired, collisionPolicy: options.collisionPolicy, copyInsteadOfMove: keepTmpForImmich)
         folderOutcome = outcome
+        reportFolderOutcome(outcome, progress: progress)
         if !keepTmpForImmich {
             switch outcome {
             case .exported(let url):
@@ -4763,6 +4768,17 @@ private func exportEditedImageToOutputs(
         try? FileManager.default.removeItem(at: tmp)
     }
     return OutputsOutcome(folderOutcome: folderOutcome, immichAssetId: nil)
+}
+
+/// Folder exports used to be invisible to the counters (those only followed Immich
+/// messages). Report each placed or skipped file so the UI can count them.
+private func reportFolderOutcome(_ outcome: ExportOutcome, progress: @escaping @Sendable (PhotoBackupProgress) -> Void) {
+    switch outcome {
+    case .exported(let url):
+        progress(.message("Folder: exported \(url.lastPathComponent)"))
+    case .skippedIdentical(let existing):
+        progress(.message("Folder: skipped identical \(existing.lastPathComponent)"))
+    }
 }
 
 private func runSync<T>(_ op: @escaping @Sendable () async throws -> T) throws -> T {

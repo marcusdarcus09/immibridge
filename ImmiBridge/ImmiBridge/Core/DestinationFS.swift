@@ -206,15 +206,28 @@ public final class SSHSession: @unchecked Sendable {
         let out = Pipe(), err = Pipe()
         p.standardOutput = out
         p.standardError = err
+        var input: FileHandle? = nil
         if let stdinFile {
             guard let fh = FileHandle(forReadingAtPath: stdinFile.path) else {
                 throw SSHError(message: "Cannot open \(stdinFile.path) for upload")
             }
+            input = fh
             p.standardInput = fh
         } else {
             p.standardInput = FileHandle.nullDevice
         }
+        // Every handle opened here is closed before returning. Each export makes
+        // several SSH calls, and leaking even two descriptors per call exhausted
+        // the process limit ("Too many open files") a few hundred photos in.
+        defer {
+            try? out.fileHandleForReading.close()
+            try? err.fileHandleForReading.close()
+            try? input?.close()
+        }
         try p.run()
+        // The parent's copies of the write ends must go, or EOF never arrives once ssh exits.
+        try? out.fileHandleForWriting.close()
+        try? err.fileHandleForWriting.close()
         // Drain both pipes before waiting, or a chatty command can deadlock.
         let outData = out.fileHandleForReading.readDataToEndOfFile()
         let errData = err.fileHandleForReading.readDataToEndOfFile()
