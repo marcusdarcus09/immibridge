@@ -1608,9 +1608,13 @@ public final class PhotoBackupExporter {
             guard let desiredURL else { return false }
             guard let entry = manifest.get(key: key), entry.deletedAt == nil else { return false }
             if entry.signature != signature { return false }
-            if entry.relPath != relativePathInDestination(dest, desiredURL) { return false }
-            let present = destinationFS(for: dest).exists(desiredURL)
-            if present { progressWrapped(.message("Folder: skipped unchanged \(desiredURL.lastPathComponent)")) }
+            // Check the file where it was actually placed last time. It may carry a
+            // "_2"-style suffix when another asset already owned the desired name
+            // (a photo in both the personal and the shared library, for instance);
+            // requiring the desired name here made every run add yet another copy.
+            let placedURL = dest.appendingPathComponent(entry.relPath, isDirectory: false)
+            let present = destinationFS(for: dest).exists(placedURL)
+            if present { progressWrapped(.message("Folder: skipped unchanged \(placedURL.lastPathComponent)")) }
             return present
         }
 
@@ -2800,6 +2804,26 @@ func placeTempFile(
                 try? FileManager.default.removeItem(at: tmpURL)
             }
             return .skippedIdentical(existing: desiredURL)
+        }
+
+        // The desired name belongs to a different file. Before adding another
+        // suffixed copy, see whether an earlier run already placed this exact
+        // content under one of the suffixed names.
+        let base = desiredURL.deletingPathExtension().lastPathComponent
+        let ext = desiredURL.pathExtension
+        let dir = desiredURL.deletingLastPathComponent()
+        var i = 2
+        while true {
+            let name = ext.isEmpty ? "\(base)_\(i)" : "\(base)_\(i).\(ext)"
+            let candidate = dir.appendingPathComponent(name, isDirectory: false)
+            guard fs.exists(candidate) else { break }
+            if let info = try? fs.sha256(candidate), info.size == tmpInfo.size, info.hashHex == tmpInfo.hashHex {
+                if !copyInsteadOfMove, tmpURL.isFileURL {
+                    try? FileManager.default.removeItem(at: tmpURL)
+                }
+                return .skippedIdentical(existing: candidate)
+            }
+            i += 1
         }
 
         let alt = uniqueURL(desiredURL)
