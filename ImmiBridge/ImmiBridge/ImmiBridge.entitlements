@@ -2,20 +2,13 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>com.apple.security.app-sandbox</key>
-    <true/>
+    <!-- Fork: the App Sandbox is off so the app can run /usr/bin/ssh with the user's own key. -->
     <key>com.apple.security.personal-information.photos-library</key>
     <true/>
     <key>com.apple.security.network.client</key>
     <true/>
     <key>com.apple.security.files.user-selected.read-write</key>
     <true/>
-    <key>com.apple.security.temporary-exception.mach-lookup.global-name</key>
-    <array>
-        <string>com.emerysilb.ImmiBridge-spks</string>
-        <string>com.emerysilb.ImmiBridge-spki</string>
-        <string>com.apple.security.syspolicy.exec</string>
-    </array>
     <key>com.apple.security.temporary-exception.apple-events</key>
     <array>
         <string>com.apple.Photos</string>

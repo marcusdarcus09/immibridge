@@ -7,7 +7,8 @@ import UserNotifications
 class AppDelegate: NSObject, NSApplicationDelegate {
     let model = PhotoBackupViewModel()
     let scheduler = BackupScheduler()
-    private let updaterController = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
+    // Fork: the updater stays off so the app can't replace itself with the upstream build.
+    private let updaterController = SPUStandardUpdaterController(startingUpdater: false, updaterDelegate: nil, userDriverDelegate: nil)
 
     private var statusItem: NSStatusItem?
     private let statusMenu = NSMenu()

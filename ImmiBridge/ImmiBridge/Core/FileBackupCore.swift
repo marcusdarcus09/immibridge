@@ -55,12 +55,26 @@ public final class FileBackupExporter {
         runState: @escaping @Sendable () -> BackupRunState
     ) -> FileBackupResult {
         let fm = FileManager.default
+        let fs = destinationFS(for: options.destination)
+        let remoteDestination = isSSHDestination(options.destination)
 
         var scanned = 0
         var copied = 0
         var skipped = 0
         var deleted = 0
         var errors = 0
+
+        if remoteDestination {
+            let ssh = SSHDestinationFS.shared(for: options.destination)
+            ssh.resetCache()
+            do {
+                try ssh.sshSession.start()
+                try ssh.ensureDir(options.destination)
+            } catch {
+                progress(.message("ERROR Files: \(error.localizedDescription)"))
+                return FileBackupResult(scannedFiles: 0, copiedFiles: 0, skippedFiles: 0, deletedFiles: 0, errorCount: 1)
+            }
+        }
 
         progress(.fileScanning)
 
@@ -123,7 +137,7 @@ public final class FileBackupExporter {
             let key = "file:\(file.relPath)"
 
             if options.mode != .full, let existing = manifest.get(key: key), existing.deletedAt == nil {
-                if existing.signature == signature, fm.fileExists(atPath: options.destination.appendingPathComponent(existing.relPath).path) {
+                if existing.signature == signature, fs.exists(options.destination.appendingPathComponent(existing.relPath)) {
                     skipped += 1
                     do {
                         try manifest.upsert(ManifestEntry(
@@ -156,9 +170,12 @@ public final class FileBackupExporter {
                 continue
             }
 
-            let tmpURL = options.destination
-                .appendingPathComponent(".immibridge-tmp", isDirectory: true)
-                .appendingPathComponent(".tmp-\(UUID().uuidString)", isDirectory: false)
+            // Stage next to the destination when it is local (so the final step is a
+            // rename on the same volume); for a NAS over SSH stage on the Mac instead.
+            let stagingDir = remoteDestination
+                ? fm.temporaryDirectory.appendingPathComponent("immibridge-files-tmp", isDirectory: true)
+                : options.destination.appendingPathComponent(".immibridge-tmp", isDirectory: true)
+            let tmpURL = stagingDir.appendingPathComponent(".tmp-\(UUID().uuidString)", isDirectory: false)
             do {
                 try ensureDir(tmpURL.deletingLastPathComponent())
                 try fm.copyItem(at: file.fileURL, to: tmpURL)
@@ -202,9 +219,9 @@ public final class FileBackupExporter {
                 guard let entry = manifest.get(key: key), entry.deletedAt == nil else { continue }
                 let path = entry.relPath
                 let url = options.destination.appendingPathComponent(path, isDirectory: false)
-                if fm.fileExists(atPath: url.path) {
+                if fs.exists(url) {
                     do {
-                        try fm.removeItem(at: url)
+                        try fs.remove(url)
                         deleted += 1
                         try manifest.markDeleted(key: key)
                     } catch {

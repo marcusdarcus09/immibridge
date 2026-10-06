@@ -955,6 +955,16 @@ public final class PhotoBackupExporter {
 
         try ensureDir(options.tempDir)
 
+        // A NAS destination over SSH: open the shared connection once for the whole
+        // run and fail early, with a plain message, if the NAS can't be reached.
+        if let dest = options.folderExport?.destination, isSSHDestination(dest) {
+            let fs = SSHDestinationFS.shared(for: dest)
+            fs.resetCache()
+            try fs.sshSession.start()
+            try fs.ensureDir(dest)
+            progress(.message("SSH: connected to \(fs.sshSession.target), writing to \(destinationPath(dest))"))
+        }
+
         // Reset cancellation registry for a fresh run. Anything left over from a
         // prior cancelled run would otherwise refuse to start new URLSession tasks.
         inFlightRegistry.reset()
@@ -1047,10 +1057,7 @@ public final class PhotoBackupExporter {
         let runId = UUID().uuidString
         let manifest: ManifestStore?
         if let dest = options.folderExport?.destination, options.backupMode != .full {
-            let manifestURL = dest
-                .appendingPathComponent(".immibridge", isDirectory: true)
-                .appendingPathComponent("manifest.sqlite", isDirectory: false)
-            manifest = try? ManifestStore(sqliteURL: manifestURL)
+            manifest = try? ManifestStore(sqliteURL: manifestDatabaseURL(for: dest))
         } else {
             manifest = nil
         }
@@ -1590,8 +1597,8 @@ public final class PhotoBackupExporter {
         }
 
         func relativePathInDestination(_ destination: URL, _ file: URL) -> String {
-            let root = destination.standardizedFileURL.path.hasSuffix("/") ? destination.standardizedFileURL.path : destination.standardizedFileURL.path + "/"
-            let p = file.standardizedFileURL.path
+            let root = destinationPath(destination).hasSuffix("/") ? destinationPath(destination) : destinationPath(destination) + "/"
+            let p = destinationPath(file)
             if p.hasPrefix(root) { return String(p.dropFirst(root.count)) }
             return file.lastPathComponent
         }
@@ -1602,16 +1609,16 @@ public final class PhotoBackupExporter {
             guard let entry = manifest.get(key: key), entry.deletedAt == nil else { return false }
             if entry.signature != signature { return false }
             if entry.relPath != relativePathInDestination(dest, desiredURL) { return false }
-            return FileManager.default.fileExists(atPath: desiredURL.path)
+            return destinationFS(for: dest).exists(desiredURL)
         }
 
         func upsertManifestIfPossible(key: String, signature: String, desiredURL: URL?) {
             guard let manifest, let dest = options.folderExport?.destination else { return }
             guard let desiredURL else { return }
             let rel = relativePathInDestination(dest, desiredURL)
-            let attrs = try? FileManager.default.attributesOfItem(atPath: desiredURL.path)
-            let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
-            let mtime = (attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+            let attrs = destinationFS(for: dest).attributes(desiredURL)
+            let size = attrs?.size ?? 0
+            let mtime = attrs?.mtime ?? 0
             try? manifest.upsert(ManifestEntry(
                 key: key,
                 relPath: rel,
@@ -1690,7 +1697,7 @@ public final class PhotoBackupExporter {
                 signature: String
             ) {
                 guard !additionalFolders.isEmpty else { return }
-                guard FileManager.default.fileExists(atPath: sourceURL.path) else { return }
+                guard destinationFS(for: sourceURL).exists(sourceURL) else { return }
                 for f in additionalFolders {
                     let target = f.url.appendingPathComponent(filename, isDirectory: false)
                     do {
@@ -2002,7 +2009,7 @@ public final class PhotoBackupExporter {
                        entry.signature == sig
                     {
                         let url = dest.appendingPathComponent(entry.relPath, isDirectory: false)
-                        if FileManager.default.fileExists(atPath: url.path) {
+                        if destinationFS(for: dest).exists(url) {
                             // Touch lastSeenRunId for mirror mode safety.
                             try? manifest.upsert(ManifestEntry(
                                 key: key,
@@ -2520,9 +2527,10 @@ public final class PhotoBackupExporter {
                 if shouldCancel() { break }
                 guard let entry = manifest.get(key: key), entry.deletedAt == nil else { continue }
                 let url = dest.appendingPathComponent(entry.relPath, isDirectory: false)
-                if FileManager.default.fileExists(atPath: url.path) {
+                let fs = destinationFS(for: dest)
+                if fs.exists(url) {
                     do {
-                        try FileManager.default.removeItem(at: url)
+                        try fs.remove(url)
                         try manifest.markDeleted(key: key)
                     } catch {
                         progressWrapped(.message("ERROR Mirror: failed to delete \(entry.relPath): \(error)"))
@@ -2694,11 +2702,12 @@ func extFromUTI(_ uti: String?) -> String? {
 }
 
 func ensureDir(_ url: URL) throws {
-    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    try destinationFS(for: url).ensureDir(url)
 }
 
 func uniqueURL(_ desired: URL) -> URL {
-    if !FileManager.default.fileExists(atPath: desired.path) {
+    let fs = destinationFS(for: desired)
+    if !fs.exists(desired) {
         return desired
     }
     let base = desired.deletingPathExtension().lastPathComponent
@@ -2708,7 +2717,7 @@ func uniqueURL(_ desired: URL) -> URL {
     while true {
         let name = ext.isEmpty ? "\(base)_\(i)" : "\(base)_\(i).\(ext)"
         let candidate = dir.appendingPathComponent(name, isDirectory: false)
-        if !FileManager.default.fileExists(atPath: candidate.path) {
+        if !fs.exists(candidate) {
             return candidate
         }
         i += 1
@@ -2755,27 +2764,27 @@ func placeTempFile(
     collisionPolicy: PhotoBackupOptions.CollisionPolicy,
     copyInsteadOfMove: Bool = false
 ) throws -> ExportOutcome {
-    // Local helper that either moves or copies the source file, so both code paths
-    // (first-time write and rename-to-avoid-collision) share the same behavior.
+    // The destination may be a local folder or a NAS reached over SSH; `fs` hides
+    // that difference. Both code paths (first-time write and rename-to-avoid-
+    // collision) share the same placement behavior.
+    let fs = destinationFS(for: desiredURL)
     func placeFile(from src: URL, to dst: URL) throws {
-        if copyInsteadOfMove {
-            try FileManager.default.copyItem(at: src, to: dst)
-        } else {
-            try atomicMove(from: src, to: dst)
-        }
+        try fs.place(src, to: dst, copy: copyInsteadOfMove)
     }
 
     switch collisionPolicy {
     case .skipIdenticalElseRename:
-        if !FileManager.default.fileExists(atPath: desiredURL.path) {
+        if !fs.exists(desiredURL) {
             try placeFile(from: tmpURL, to: desiredURL)
             return .exported(url: desiredURL)
         }
 
-        let tmpInfo = try sha256File(tmpURL)
+        // The source is normally a local temp file; when mirroring into album
+        // folders it is a file already at the destination.
+        let tmpInfo = try destinationFS(for: tmpURL).sha256(tmpURL)
         let existingInfo: (size: UInt64, hashHex: String)
         do {
-            existingInfo = try sha256File(desiredURL)
+            existingInfo = try fs.sha256(desiredURL)
         } catch {
             // If we can't hash the existing file, fall back to renaming to avoid clobbering.
             let alt = uniqueURL(desiredURL)
@@ -2784,7 +2793,7 @@ func placeTempFile(
         }
 
         if tmpInfo.size == existingInfo.size, tmpInfo.hashHex == existingInfo.hashHex {
-            if !copyInsteadOfMove {
+            if !copyInsteadOfMove, tmpURL.isFileURL {
                 try? FileManager.default.removeItem(at: tmpURL)
             }
             return .skippedIdentical(existing: desiredURL)
@@ -4607,15 +4616,21 @@ private func exportResourceToOutputs(
 
     var uploadURL: URL = tmp
     var folderOutcome: ExportOutcome?
+    // A file placed on a NAS over SSH can't be read back for the Immich upload,
+    // so in that case the local temp file is kept for it and removed afterwards.
+    var keepTmpForImmich = false
 
     if let desiredFolderURL {
-        let outcome = try placeTempFile(tmpURL: tmp, desiredURL: desiredFolderURL, collisionPolicy: options.collisionPolicy)
+        keepTmpForImmich = isSSHDestination(desiredFolderURL) && options.immichUpload != nil
+        let outcome = try placeTempFile(tmpURL: tmp, desiredURL: desiredFolderURL, collisionPolicy: options.collisionPolicy, copyInsteadOfMove: keepTmpForImmich)
         folderOutcome = outcome
-        switch outcome {
-        case .exported(let url):
-            uploadURL = url
-        case .skippedIdentical(let existing):
-            uploadURL = existing
+        if !keepTmpForImmich {
+            switch outcome {
+            case .exported(let url):
+                uploadURL = url
+            case .skippedIdentical(let existing):
+                uploadURL = existing
+            }
         }
     }
 
@@ -4634,7 +4649,7 @@ private func exportResourceToOutputs(
             ]
         ]]
 
-        let deleteAfterUpload = (desiredFolderURL == nil) ? tmp : nil
+        let deleteAfterUpload = (desiredFolderURL == nil || keepTmpForImmich) ? tmp : nil
         let immichId = try immichPipeline.enqueue(
             fileURL: uploadURL,
             deleteAfterUpload: deleteAfterUpload,
@@ -4652,7 +4667,7 @@ private func exportResourceToOutputs(
         return OutputsOutcome(folderOutcome: folderOutcome, immichAssetId: immichId)
     }
 
-    if desiredFolderURL == nil, options.immichUpload != nil {
+    if desiredFolderURL == nil || keepTmpForImmich, options.immichUpload != nil {
         try? FileManager.default.removeItem(at: tmp)
     }
     return OutputsOutcome(folderOutcome: folderOutcome, immichAssetId: nil)
@@ -4696,16 +4711,20 @@ private func exportEditedImageToOutputs(
     let filename = "\(baseName)_edited.\(ext)"
     var uploadURL: URL = tmp
     var folderOutcome: ExportOutcome?
+    var keepTmpForImmich = false
 
     if let desiredFolderDir {
         let desired = desiredFolderDir.appendingPathComponent(filename, isDirectory: false)
-        let outcome = try placeTempFile(tmpURL: tmp, desiredURL: desired, collisionPolicy: options.collisionPolicy)
+        keepTmpForImmich = isSSHDestination(desired) && options.immichUpload != nil
+        let outcome = try placeTempFile(tmpURL: tmp, desiredURL: desired, collisionPolicy: options.collisionPolicy, copyInsteadOfMove: keepTmpForImmich)
         folderOutcome = outcome
-        switch outcome {
-        case .exported(let url):
-            uploadURL = url
-        case .skippedIdentical(let existing):
-            uploadURL = existing
+        if !keepTmpForImmich {
+            switch outcome {
+            case .exported(let url):
+                uploadURL = url
+            case .skippedIdentical(let existing):
+                uploadURL = existing
+            }
         }
     }
 
@@ -4722,7 +4741,7 @@ private func exportEditedImageToOutputs(
             ]
         ]]
 
-        let deleteAfterUpload = (desiredFolderDir == nil) ? tmp : nil
+        let deleteAfterUpload = (desiredFolderDir == nil || keepTmpForImmich) ? tmp : nil
         _ = try immichPipeline.enqueue(
             fileURL: uploadURL,
             deleteAfterUpload: deleteAfterUpload,
@@ -4740,7 +4759,7 @@ private func exportEditedImageToOutputs(
         return OutputsOutcome(folderOutcome: folderOutcome, immichAssetId: nil)
     }
 
-    if desiredFolderDir == nil, options.immichUpload != nil {
+    if desiredFolderDir == nil || keepTmpForImmich, options.immichUpload != nil {
         try? FileManager.default.removeItem(at: tmp)
     }
     return OutputsOutcome(folderOutcome: folderOutcome, immichAssetId: nil)

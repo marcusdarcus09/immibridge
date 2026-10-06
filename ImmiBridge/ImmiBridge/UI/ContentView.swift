@@ -519,8 +519,8 @@ private extension ContentView {
         let badge: StatusBadge = {
             switch model.destinationMode {
             case .folder:
-                return model.destinationPath.isEmpty
-                    ? StatusBadge(kind: .muted, text: "Choose Folder")
+                return !model.hasFolderDestination
+                    ? StatusBadge(kind: .muted, text: model.sshEnabled ? "Needs SSH Setup" : "Choose Folder")
                     : StatusBadge(kind: .success, text: "Ready")
             case .immich:
                 if model.immichServerURL.isEmpty || model.immichApiKey.isEmpty {
@@ -587,18 +587,49 @@ private extension ContentView {
             SectionHeader(systemName: "folder.fill", title: "Folder")
 
             VStack(alignment: .leading, spacing: 10) {
-                Text("Path")
-                    .foregroundStyle(DesignSystem.Colors.textSecondary)
-                HStack(spacing: 12) {
-                    Text(model.destinationPath.isEmpty ? "Not set" : model.destinationPath)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .foregroundStyle(DesignSystem.Colors.textPrimary.opacity(0.92))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    Button("Change…") {
-                        model.chooseDestination()
+                Toggle(isOn: Binding(get: { model.sshEnabled }, set: { model.setSSHEnabled($0) })) {
+                    Text("Send to a NAS over SSH (no mounted share needed)")
+                }
+                .toggleStyle(.switch)
+                .disabled(model.isRunning)
+
+                if model.sshEnabled {
+                    Text("Login (user@host)")
+                        .foregroundStyle(DesignSystem.Colors.textSecondary)
+                    TextField("user@nas", text: Binding(get: { model.sshTarget }, set: { model.setSSHTarget($0) }))
+                        .textFieldStyle(.roundedBorder)
+                        .disabled(model.isRunning)
+                    Text("Folder on the NAS")
+                        .foregroundStyle(DesignSystem.Colors.textSecondary)
+                    TextField("/share/Photos/Exported", text: Binding(get: { model.sshRemotePath }, set: { model.setSSHRemotePath($0) }))
+                        .textFieldStyle(.roundedBorder)
+                        .disabled(model.isRunning)
+                    HStack(spacing: 12) {
+                        Button("Test Connection") { model.testSSHConnection() }
+                            .disabled(model.isRunning)
+                        Text(model.sshTestStatus)
+                            .font(.caption)
+                            .foregroundStyle(DesignSystem.Colors.textSecondary)
+                            .lineLimit(2)
                     }
-                    .disabled(model.isRunning)
+                    Text("Uses the SSH key in your ~/.ssh folder (key login must already work in Terminal). Files are written straight to the NAS, so the share does not have to be mounted.")
+                        .font(.caption)
+                        .foregroundStyle(DesignSystem.Colors.textSecondary.opacity(0.85))
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text("Path")
+                        .foregroundStyle(DesignSystem.Colors.textSecondary)
+                    HStack(spacing: 12) {
+                        Text(model.destinationPath.isEmpty ? "Not set" : model.destinationPath)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .foregroundStyle(DesignSystem.Colors.textPrimary.opacity(0.92))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Button("Change…") {
+                            model.chooseDestination()
+                        }
+                        .disabled(model.isRunning)
+                    }
                 }
 
                 Divider()

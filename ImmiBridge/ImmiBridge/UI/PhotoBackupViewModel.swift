@@ -119,6 +119,11 @@ final class PhotoBackupViewModel: ObservableObject {
     @Published var destinationMode: DestinationMode = .immich
     @Published var sourceMode: SourceMode = .photos
     @Published var destinationPath: String = ""
+    // Folder destination on a NAS over SSH, instead of a mounted share.
+    @Published private(set) var sshEnabled: Bool = false
+    @Published private(set) var sshTarget: String = ""      // user@host
+    @Published private(set) var sshRemotePath: String = ""  // absolute folder path on the NAS
+    @Published private(set) var sshTestStatus: String = "Not tested"
     @Published var folderOrganization: FolderOrganizationUI = .byDate
     @Published var mode: Mode = .originals
     @Published var media: Media = .all
@@ -250,6 +255,9 @@ final class PhotoBackupViewModel: ObservableObject {
         }
         destinationPath = defaults.string(forKey: "destinationPath") ?? ""
         folderDestinationBookmark = defaults.data(forKey: "folderDestinationBookmark")
+        sshEnabled = defaults.bool(forKey: "sshEnabled")
+        sshTarget = defaults.string(forKey: "sshTarget") ?? ""
+        sshRemotePath = defaults.string(forKey: "sshRemotePath") ?? ""
         if let raw = defaults.string(forKey: "folderOrganization"),
            let v = FolderOrganizationUI(rawValue: raw) {
             folderOrganization = v
@@ -410,6 +418,58 @@ final class PhotoBackupViewModel: ObservableObject {
         defaults.set(destinationPath, forKey: "destinationPath")
     }
 
+    func setSSHEnabled(_ on: Bool) {
+        sshEnabled = on
+        defaults.set(on, forKey: "sshEnabled")
+    }
+
+    func setSSHTarget(_ newValue: String) {
+        sshTarget = newValue
+        defaults.set(newValue, forKey: "sshTarget")
+        sshTestStatus = "Not tested"
+    }
+
+    func setSSHRemotePath(_ newValue: String) {
+        sshRemotePath = newValue
+        defaults.set(newValue, forKey: "sshRemotePath")
+        sshTestStatus = "Not tested"
+    }
+
+    /// True when the folder destination is usable: a chosen local folder, or an SSH login plus path.
+    var hasFolderDestination: Bool {
+        if sshEnabled { return makeSSHDestinationURL(target: sshTarget, remotePath: sshRemotePath) != nil }
+        return !destinationPath.isEmpty
+    }
+
+    var folderDestinationDisplay: String {
+        if sshEnabled {
+            return (sshTarget.isEmpty || sshRemotePath.isEmpty) ? "" : "\(sshTarget):\(sshRemotePath)"
+        }
+        return destinationPath
+    }
+
+    /// The folder destination as the export core expects it: a file URL, or `ssh://user@host/path`.
+    func folderDestinationURL() -> URL? {
+        if sshEnabled { return makeSSHDestinationURL(target: sshTarget, remotePath: sshRemotePath) }
+        if let b = folderDestinationBookmark, let url = resolveBookmark(b) { return url }
+        if !destinationPath.isEmpty { return URL(fileURLWithPath: destinationPath, isDirectory: true) }
+        return nil
+    }
+
+    func testSSHConnection() {
+        guard let url = makeSSHDestinationURL(target: sshTarget, remotePath: sshRemotePath) else {
+            sshTestStatus = "Enter user@host and a folder path"
+            return
+        }
+        sshTestStatus = "Testing…"
+        let target = (url.user.map { $0 + "@" } ?? "") + (url.host ?? "")
+        let path = url.path
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let status = SSHSession.shared(target: target).probe(remotePath: path)
+            await MainActor.run { self?.sshTestStatus = status }
+        }
+    }
+
     private func setFolderDestination(url: URL) {
         setDestinationPath(url.path)
         if let data = try? url.bookmarkData(options: [.withSecurityScope], includingResourceValuesForKeys: nil, relativeTo: nil) {
@@ -478,7 +538,7 @@ final class PhotoBackupViewModel: ObservableObject {
         private var urls: [URL] = []
 
         func add(_ url: URL) {
-            if url.startAccessingSecurityScopedResource() {
+            if url.isFileURL, url.startAccessingSecurityScopedResource() {
                 urls.append(url)
             }
         }
@@ -512,7 +572,7 @@ final class PhotoBackupViewModel: ObservableObject {
         }
         switch destinationMode {
         case .folder:
-            if destinationPath.isEmpty { return false }
+            if !hasFolderDestination { return false }
             if sourceMode == .files { return !customFolderPaths.isEmpty }
             return true
         case .immich:
@@ -520,14 +580,14 @@ final class PhotoBackupViewModel: ObservableObject {
             if sourceMode == .files { return !customFolderPaths.isEmpty }
             return true
         case .both:
-            if destinationPath.isEmpty || immichServerURL.isEmpty || immichApiKey.isEmpty { return false }
+            if !hasFolderDestination || immichServerURL.isEmpty || immichApiKey.isEmpty { return false }
             if sourceMode == .files { return !customFolderPaths.isEmpty }
             return true
         }
     }
 
     var canStartFolderOnly: Bool {
-        !isRunning && !destinationPath.isEmpty
+        !isRunning && hasFolderDestination
     }
 
     var canStartImmichOnly: Bool {
@@ -535,7 +595,7 @@ final class PhotoBackupViewModel: ObservableObject {
     }
 
     var canStartBoth: Bool {
-        !isRunning && !destinationPath.isEmpty && !immichServerURL.isEmpty && !immichApiKey.isEmpty
+        !isRunning && hasFolderDestination && !immichServerURL.isEmpty && !immichApiKey.isEmpty
     }
 
     func startFolderExport() {
@@ -660,7 +720,7 @@ final class PhotoBackupViewModel: ObservableObject {
             sortOrder: order.rawValue,
             immichServerURL: immichServerURL.isEmpty ? nil : immichServerURL,
             immichDeviceId: immichDeviceId.isEmpty ? nil : immichDeviceId,
-            folderDestination: destinationPath.isEmpty ? nil : destinationPath
+            folderDestination: folderDestinationDisplay.isEmpty ? nil : folderDestinationDisplay
         )
 
         // Create or use existing session
@@ -675,11 +735,7 @@ final class PhotoBackupViewModel: ObservableObject {
         let folderExport: FolderExportOptions?
         switch destinationMode {
         case .folder, .both:
-            if let b = folderDestinationBookmark, let url = resolveBookmark(b) {
-                folderExport = FolderExportOptions(destination: url)
-            } else {
-                folderExport = FolderExportOptions(destination: URL(fileURLWithPath: destinationPath, isDirectory: true))
-            }
+            folderExport = folderDestinationURL().map { FolderExportOptions(destination: $0) }
         case .immich:
             folderExport = nil
         }
@@ -828,9 +884,7 @@ final class PhotoBackupViewModel: ObservableObject {
 
                         // Folder destination copy (optional)
                         if let dest = folderExport?.destination {
-                            let manifestURL = dest
-                                .appendingPathComponent(".immibridge", isDirectory: true)
-                                .appendingPathComponent("manifest.sqlite", isDirectory: false)
+                            let manifestURL = manifestDatabaseURL(for: dest)
                             if let manifest = try? ManifestStore(sqliteURL: manifestURL) {
                                 let fileOpts = FileBackupOptions(
                                     sources: sources,
@@ -1598,9 +1652,7 @@ final class PhotoBackupViewModel: ObservableObject {
                 let didAccess = destination.startAccessingSecurityScopedResource()
                 defer { if didAccess { destination.stopAccessingSecurityScopedResource() } }
 
-                let base = destination
-                    .appendingPathComponent(".immibridge", isDirectory: true)
-                    .appendingPathComponent("manifest.sqlite", isDirectory: false)
+                let base = manifestDatabaseURL(for: destination)
                 let candidates = [
                     base,
                     URL(fileURLWithPath: base.path + "-wal"),
@@ -1657,13 +1709,7 @@ final class PhotoBackupViewModel: ObservableObject {
     }
 
     private func resolveFolderDestinationURLForReset() -> URL? {
-        if let b = folderDestinationBookmark, let url = resolveBookmark(b) {
-            return url
-        }
-        if !destinationPath.isEmpty {
-            return URL(fileURLWithPath: destinationPath, isDirectory: true)
-        }
-        return nil
+        folderDestinationURL()
     }
 
     /// Extract the base asset ID from a message like "Immich: upload created (deviceAssetId)"
