@@ -1054,8 +1054,10 @@ private extension ContentView {
             }
         }
         .padding(14)
-        .cardBackground()
+        // Size the card before painting its background, so the background spans
+        // the full height and lines up with the button column beside it.
         .frame(height: 112)
+        .cardBackground()
         .sheet(isPresented: $showErrorsSheet) {
             ErrorsSheetView()
                 .environmentObject(model)
