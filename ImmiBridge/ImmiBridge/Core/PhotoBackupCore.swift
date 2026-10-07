@@ -2765,6 +2765,28 @@ public enum ExportOutcome: Sendable {
     case skippedIdentical(existing: URL)
 }
 
+/// If `desired` has suffixed siblings (X_2, X_3, ...) and one of them holds exactly
+/// the content of `source`, returns that sibling. The hash of `source` is only
+/// computed when at least one sibling exists.
+private func identicalSuffixedSibling(of desired: URL, source: URL, fs: DestinationFS) throws -> URL? {
+    let base = desired.deletingPathExtension().lastPathComponent
+    let ext = desired.pathExtension
+    let dir = desired.deletingLastPathComponent()
+    var sourceInfo: (size: UInt64, hashHex: String)? = nil
+    var i = 2
+    while true {
+        let name = ext.isEmpty ? "\(base)_\(i)" : "\(base)_\(i).\(ext)"
+        let candidate = dir.appendingPathComponent(name, isDirectory: false)
+        guard fs.exists(candidate) else { return nil }
+        if sourceInfo == nil { sourceInfo = try destinationFS(for: source).sha256(source) }
+        if let info = try? fs.sha256(candidate), let src = sourceInfo,
+           info.size == src.size, info.hashHex == src.hashHex {
+            return candidate
+        }
+        i += 1
+    }
+}
+
 func placeTempFile(
     tmpURL: URL,
     desiredURL: URL,
@@ -2781,6 +2803,16 @@ func placeTempFile(
 
     switch collisionPolicy {
     case .skipIdenticalElseRename:
+        // An earlier run may have placed this exact content under a suffixed name
+        // (after a name collision) even if the plain name is free now, as happens
+        // once duplicates are merged in Photos. Reuse it rather than add a copy.
+        if let twin = try identicalSuffixedSibling(of: desiredURL, source: tmpURL, fs: fs) {
+            if !copyInsteadOfMove, tmpURL.isFileURL {
+                try? FileManager.default.removeItem(at: tmpURL)
+            }
+            return .skippedIdentical(existing: twin)
+        }
+
         if !fs.exists(desiredURL) {
             try placeFile(from: tmpURL, to: desiredURL)
             return .exported(url: desiredURL)
@@ -2806,26 +2838,8 @@ func placeTempFile(
             return .skippedIdentical(existing: desiredURL)
         }
 
-        // The desired name belongs to a different file. Before adding another
-        // suffixed copy, see whether an earlier run already placed this exact
-        // content under one of the suffixed names.
-        let base = desiredURL.deletingPathExtension().lastPathComponent
-        let ext = desiredURL.pathExtension
-        let dir = desiredURL.deletingLastPathComponent()
-        var i = 2
-        while true {
-            let name = ext.isEmpty ? "\(base)_\(i)" : "\(base)_\(i).\(ext)"
-            let candidate = dir.appendingPathComponent(name, isDirectory: false)
-            guard fs.exists(candidate) else { break }
-            if let info = try? fs.sha256(candidate), info.size == tmpInfo.size, info.hashHex == tmpInfo.hashHex {
-                if !copyInsteadOfMove, tmpURL.isFileURL {
-                    try? FileManager.default.removeItem(at: tmpURL)
-                }
-                return .skippedIdentical(existing: candidate)
-            }
-            i += 1
-        }
-
+        // The desired name belongs to a different file (suffixed siblings were
+        // already checked above), so take the next free suffixed name.
         let alt = uniqueURL(desiredURL)
         try placeFile(from: tmpURL, to: alt)
         return .exported(url: alt)
