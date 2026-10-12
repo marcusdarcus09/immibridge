@@ -4662,6 +4662,8 @@ private func exportResourceToOutputs(
     var keepTmpForImmich = false
 
     if let desiredFolderURL {
+        // Photos may hold a corrected date the original file doesn't have.
+        applyPhotosCaptureDate(to: tmp, captureDate: asset.creationDate)
         keepTmpForImmich = isSSHDestination(desiredFolderURL) && options.immichUpload != nil
         let outcome = try placeTempFile(tmpURL: tmp, desiredURL: desiredFolderURL, collisionPolicy: options.collisionPolicy, copyInsteadOfMove: keepTmpForImmich)
         folderOutcome = outcome
@@ -4757,6 +4759,7 @@ private func exportEditedImageToOutputs(
 
     if let desiredFolderDir {
         let desired = desiredFolderDir.appendingPathComponent(filename, isDirectory: false)
+        applyPhotosCaptureDate(to: tmp, captureDate: asset.creationDate)
         keepTmpForImmich = isSSHDestination(desired) && options.immichUpload != nil
         let outcome = try placeTempFile(tmpURL: tmp, desiredURL: desired, collisionPolicy: options.collisionPolicy, copyInsteadOfMove: keepTmpForImmich)
         folderOutcome = outcome
