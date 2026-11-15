@@ -68,3 +68,9 @@ test_export/
 
 # Claude Code
 .claude/
+
+# Secrets and local-only files (repo audit, 2026-11-14)
+.dev.vars
+.wrangler/
+*.p8
+__pycache__/
