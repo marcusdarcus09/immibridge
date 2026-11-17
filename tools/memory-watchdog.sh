@@ -8,7 +8,8 @@ OUT="$HOME/Library/Logs/immibridge-watchdog"; mkdir -p "$OUT"
 LOG="$OUT/watchdog.log"
 end=$(( $(date +%s) + HOURS*3600 ))
 echo "$(date '+%F %T') watching, limit ${LIMIT_MB} MB, for ${HOURS} h" >> "$LOG"
-last=0
+last=0; heaped=0
+HEAP_AT_MB="${HEAP_AT_MB:-2500}"
 while [ "$(date +%s)" -lt "$end" ]; do
   pid=$(pgrep -x "ImmiBridge SSH" | head -1)
   if [ -n "$pid" ]; then
@@ -17,6 +18,12 @@ while [ "$(date +%s)" -lt "$end" ]; do
     # a line every time it grows by 500 MB, so the climb is visible afterwards
     if [ $(( mb - last )) -ge 500 ] || [ $(( last - mb )) -ge 500 ]; then
       echo "$(date '+%F %T') pid $pid ${mb} MB" >> "$LOG"; last=$mb
+    fi
+    # Once, part way up: which kinds of objects are piling up (classes and sizes).
+    if [ "$heaped" = 0 ] && [ "$mb" -ge "$HEAP_AT_MB" ]; then
+      heaped=1; ts=$(date +%Y%m%d-%H%M%S)
+      echo "$(date '+%F %T') ${mb} MB, recording a heap summary" >> "$LOG"
+      heap -s -H "$pid" > "$OUT/heap-$ts.txt" 2>&1
     fi
     if [ "$mb" -ge "$LIMIT_MB" ]; then
       ts=$(date +%Y%m%d-%H%M%S)
