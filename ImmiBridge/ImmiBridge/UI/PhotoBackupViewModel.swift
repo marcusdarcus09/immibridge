@@ -211,6 +211,12 @@ final class PhotoBackupViewModel: ObservableObject {
     private var lastThumbnailRequestId: PHImageRequestID?
     private var skippedAssetIds: Set<String> = []  // Track asset-level skips (not file-level)
     private var replacedAssetIds: Set<String> = [] // Track asset-level replacements to avoid double-counting
+    // Folder destination: one item (photo/video) can write several files (original, edited
+    // render, Live Photo video). The counters count items, so Uploaded + Skipped + Errors
+    // match the "n/total items" progress (Marc, 2026-11-18: "the numbers dont agree").
+    private enum AssetOutcome: Int { case skipped = 1, copied = 2, failed = 3 }
+    private var currentAssetId: String? = nil
+    private var currentOutcome: AssetOutcome? = nil
     private var countedImmichUploadErrorAssetIds: Set<String> = []
     private var currentFailedUploadsDir: URL? = nil
     private var logBuffer: [LogLine] = []
@@ -661,6 +667,8 @@ final class PhotoBackupViewModel: ObservableObject {
         currentAssetName = ""
         imagesSeen = 0
         didShowFirstThumbnail = false
+        currentAssetId = nil
+        currentOutcome = nil
 
         // Restore counters from session or reset
         if let session = session {
@@ -1295,6 +1303,8 @@ final class PhotoBackupViewModel: ObservableObject {
             progressTotal = Double(total)
             progressValue = Double(index)
             currentAssetName = baseName
+            currentAssetId = localIdentifier
+            currentOutcome = nil
             statusText = "Exporting \(index)/\(total): \(baseName)"
             // Avoid flooding the log (and pushing out Immich upload messages).
             if index <= 25 || index == total || (index % 250 == 0) {
@@ -1356,15 +1366,15 @@ final class PhotoBackupViewModel: ObservableObject {
             } else if msg.hasPrefix("ERROR Immich: upload failed for file") {
                 errorCount += 1
             } else if msg.hasPrefix("ERROR processing") || msg.hasPrefix("ERROR exporting") {
-                errorCount += 1
+                recordAssetOutcome(.failed)
             } else if msg.hasPrefix("ERROR Files:") {
                 errorCount += 1
             } else if msg.hasPrefix("Folder: exported") {
-                // Folder destination (local or SSH): one file written.
-                uploadedCount += 1
+                // Folder destination (local or SSH): a file of the current item was written.
+                recordAssetOutcome(.copied)
             } else if msg.hasPrefix("Folder: skipped") {
                 // Already there with identical content, or unchanged since the last run.
-                skippedCount += 1
+                recordAssetOutcome(.skipped)
             } else if msg.contains("skipping upload") {
                 // Messages like "Immich: exists, skipping upload (deviceAssetId)"
                 // or "Immich: duplicate, skipping upload (deviceAssetId)"
@@ -1723,6 +1733,25 @@ final class PhotoBackupViewModel: ObservableObject {
 
     /// Extract the base asset ID from a message like "Immich: upload created (deviceAssetId)"
     /// Strips suffixes like ":edited", ":pairedVideo", ":video" to get the base localIdentifier
+    /// Count the current item once: failed beats copied beats skipped, so an item with
+    /// one file copied and one already there counts as copied, and any error as an error.
+    private func recordAssetOutcome(_ outcome: AssetOutcome) {
+        func bump(_ o: AssetOutcome, _ d: Int) {
+            switch o {
+            case .skipped: skippedCount += d
+            case .copied: uploadedCount += d
+            case .failed: errorCount += d
+            }
+        }
+        guard currentAssetId != nil else { bump(outcome, 1); return }   // no item context: count the file
+        if let current = currentOutcome {
+            if outcome.rawValue <= current.rawValue { return }
+            bump(current, -1)
+        }
+        bump(outcome, 1)
+        currentOutcome = outcome
+    }
+
     private func extractBaseAssetId(from message: String) -> String? {
         // Find content in parentheses at the end: "... (deviceAssetId)"
         guard let openParen = message.lastIndex(of: "("),
