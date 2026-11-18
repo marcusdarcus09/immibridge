@@ -3020,46 +3020,19 @@ private func performSingleResourceExport(
         progressCallback?(progress, true)
     }
 
-    // We use `requestData` (rather than `writeData`) so we get a cancellable
-    // PHAssetResourceDataRequestID. We stream the chunks straight to disk so
-    // the on-disk semantics match what `writeData` would have given us.
-    FileManager.default.createFile(atPath: tmpURL.path, contents: nil)
-    let fileHandle: FileHandle
-    do {
-        fileHandle = try FileHandle(forWritingTo: tmpURL)
-    } catch {
-        throw error
-    }
-
-    let writeQueue = DispatchQueue(label: "immibridge.resource-write")
-    var didFailWriting = false
-
-    let requestID = PHAssetResourceManager.default().requestData(
-        for: resource,
-        options: opts,
-        dataReceivedHandler: { chunk in
-            writeQueue.sync {
-                guard !didFailWriting else { return }
-                do {
-                    try fileHandle.write(contentsOf: chunk)
-                } catch {
-                    didFailWriting = true
-                    writeError = error
-                }
-            }
-        },
-        completionHandler: { err in
-            writeQueue.sync {
-                try? fileHandle.close()
-            }
-            if let err {
-                writeError = err
-            }
-            sema.signal()
+    // PhotoKit writes the file itself (writeData), so the resource's bytes never pass
+    // through this process. Upstream used requestData + FileHandle for a cancellable
+    // request ID, but every chunk of a resource then stayed in memory until the request
+    // finished: one 6-7 GB video meant 6-7 GB of RAM (watchdog stop, 2026-11-18 03:17).
+    // A stop or timeout can no longer cancel PhotoKit mid-file; we return at once and
+    // PhotoKit finishes that one file in the background.
+    try? FileManager.default.removeItem(at: tmpURL)   // writeData refuses an existing file
+    PHAssetResourceManager.default().writeData(for: resource, toFile: tmpURL, options: opts) { err in
+        if let err {
+            writeError = err
         }
-    )
-    cancellationRegistry?.registerResourceRequest(requestID)
-    defer { cancellationRegistry?.deregisterResourceRequest(requestID) }
+        sema.signal()
+    }
 
     // Dynamic timeout - extend if iCloud download detected
     let checkInterval: TimeInterval = 1.0
@@ -3074,10 +3047,8 @@ private func performSingleResourceExport(
         elapsed += checkInterval
 
         if shouldStop?() == true {
-            // Cancel the underlying PhotoKit request so it actually gives up.
-            // The completion handler will still fire with an error; we throw
-            // the 499 sentinel ourselves so per-asset catches recognize it.
-            PHAssetResourceManager.default().cancelDataRequest(requestID)
+            // writeData has no cancel; throw the 499 sentinel so per-asset catches
+            // recognize the stop. PhotoKit finishes the current file on its own.
             throw NSError(domain: "export", code: 499, userInfo: [
                 NSLocalizedDescriptionKey: "Export stopped by user (\(resource.originalFilename))."
             ])
@@ -3093,8 +3064,6 @@ private func performSingleResourceExport(
     }
 
     if elapsed >= effectiveTimeout {
-        // Make sure PhotoKit isn't still chewing on the request before we move on.
-        PHAssetResourceManager.default().cancelDataRequest(requestID)
         throw NSError(domain: "export", code: 408, userInfo: [
             NSLocalizedDescriptionKey: "Timed out exporting resource (\(resource.originalFilename))."
         ])
