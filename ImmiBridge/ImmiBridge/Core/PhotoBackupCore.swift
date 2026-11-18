@@ -4632,6 +4632,11 @@ private func exportResourceToOutputs(
     timeoutProvider: (() -> TimeInterval)? = nil,
     cancellationRegistry: InFlightCancellationRegistry? = nil
 ) throws -> OutputsOutcome {
+    // One pool per exported file. The export loop runs as one long task, so without
+    // this every file's autoreleased data (PhotoKit chunks, file handles, queues) was
+    // kept until the run ended: 2.2 GB after a few hours, 38 GB and a frozen Mac
+    // overnight on 2026-11-17.
+    return try autoreleasepool {
     let tmp = try exportResourceToTemp(
         resource,
         tempDir: options.tempDir,
@@ -4715,6 +4720,7 @@ private func exportResourceToOutputs(
         try? FileManager.default.removeItem(at: tmp)
     }
     return OutputsOutcome(folderOutcome: folderOutcome, immichAssetId: nil)
+} // autoreleasepool
 }
 
 private func exportEditedImageToOutputs(
@@ -4729,6 +4735,11 @@ private func exportEditedImageToOutputs(
     timeoutProvider: (() -> TimeInterval)? = nil,
     cancellationRegistry: InFlightCancellationRegistry? = nil
 ) throws -> OutputsOutcome {
+    // One pool per exported file. The export loop runs as one long task, so without
+    // this every file's autoreleased data (PhotoKit chunks, file handles, queues) was
+    // kept until the run ended: 2.2 GB after a few hours, 38 GB and a frozen Mac
+    // overnight on 2026-11-17.
+    return try autoreleasepool {
     let (tmp, ext) = try exportEditedImageToTemp(
         asset: asset,
         tempDir: options.tempDir,
@@ -4809,6 +4820,7 @@ private func exportEditedImageToOutputs(
         try? FileManager.default.removeItem(at: tmp)
     }
     return OutputsOutcome(folderOutcome: folderOutcome, immichAssetId: nil)
+} // autoreleasepool
 }
 
 /// Folder exports used to be invisible to the counters (those only followed Immich
