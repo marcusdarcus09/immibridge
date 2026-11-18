@@ -1,3 +1,4 @@
+import AVFoundation
 import CryptoKit
 import Foundation
 import Photos
@@ -2750,11 +2751,14 @@ func sha256File(_ url: URL) throws -> (size: UInt64, hashHex: String) {
     defer { try? handle.close() }
 
     var hasher = SHA256()
-    while true {
+    // One pool per chunk: read(upToCount:) hands back autoreleased buffers, and without
+    // this a whole multi-GB video piled up before the hash finished.
+    while try autoreleasepool(invoking: { () throws -> Bool in
         let data = try handle.read(upToCount: 1024 * 1024) ?? Data()
-        if data.isEmpty { break }
+        if data.isEmpty { return false }
         hasher.update(data: data)
-    }
+        return true
+    }) {}
     let digest = hasher.finalize()
     let hex = digest.map { String(format: "%02x", $0) }.joined()
     return (size, hex)
@@ -2922,6 +2926,53 @@ private func classifyExportError(_ error: Error, filename: String) -> ExportErro
 
     // Default: non-retryable export failure
     return .exportFailed(underlyingError: error, filename: filename)
+}
+
+/// Videos: copy the file Photos already has on disk instead of having PhotoKit stream it.
+/// PhotoKit's requestData and writeData both pass every chunk of a resource through this
+/// process and keep them until the resource finishes, so a 7 GB video meant 7 GB of RAM
+/// (watchdog stops on 2026-11-18 at 03:17 and 13:29). FileManager.copyItem copies with a
+/// small fixed buffer. Used only when the file's size matches the resource's; anything
+/// else (slow-mo compositions, unknown sizes, iCloud-only) returns nil and goes the old way.
+func copyVideoFileToTemp(asset: PHAsset, resource: PHAssetResource, tempDir: URL,
+                         networkAccessAllowed: Bool, timeoutSeconds: TimeInterval) -> URL? {
+    guard asset.mediaType == .video else { return nil }
+    let version: PHVideoRequestOptionsVersion
+    switch resource.type {
+    case .video: version = .original
+    case .fullSizeVideo: version = .current
+    default: return nil
+    }
+    // fileSize is not public API: only read it when PHAssetResource answers to it, so a
+    // future macOS without it falls back instead of crashing.
+    guard resource.responds(to: NSSelectorFromString("fileSize")),
+          let expected = (resource.value(forKey: "fileSize") as? NSNumber)?.int64Value, expected > 0 else { return nil }
+    let opts = PHVideoRequestOptions()
+    opts.version = version
+    opts.deliveryMode = .highQualityFormat
+    opts.isNetworkAccessAllowed = networkAccessAllowed
+    let sema = DispatchSemaphore(value: 0)
+    var source: URL? = nil
+    PHImageManager.default().requestAVAsset(forVideo: asset, options: opts) { avAsset, _, _ in
+        source = (avAsset as? AVURLAsset)?.url
+        sema.signal()
+    }
+    guard sema.wait(timeout: .now() + max(timeoutSeconds, 30)) == .success,
+          let src = source, src.isFileURL,
+          let size = (try? FileManager.default.attributesOfItem(atPath: src.path))?[.size] as? NSNumber,
+          size.int64Value == expected else {
+        NSLog("ImmiBridge: video \(resource.originalFilename) via PhotoKit (no matching file on disk)")
+        return nil
+    }
+    let tmpURL = tempDir.appendingPathComponent(".tmp-\(UUID().uuidString)", isDirectory: false)
+    do {
+        try FileManager.default.copyItem(at: src, to: tmpURL)
+        NSLog("ImmiBridge: video \(resource.originalFilename) copied directly (\(expected) bytes)")
+        return tmpURL
+    } catch {
+        try? FileManager.default.removeItem(at: tmpURL)
+        return nil
+    }
 }
 
 func exportResourceToTemp(
@@ -4570,11 +4621,14 @@ func sha1HexFile(_ url: URL) throws -> String {
     let handle = try FileHandle(forReadingFrom: url)
     defer { try? handle.close() }
     var hasher = Insecure.SHA1()
-    while true {
+    // One pool per chunk: read(upToCount:) hands back autoreleased buffers, and without
+    // this a whole multi-GB video piled up before the hash finished.
+    while try autoreleasepool(invoking: { () throws -> Bool in
         let data = try handle.read(upToCount: 1024 * 1024) ?? Data()
-        if data.isEmpty { break }
+        if data.isEmpty { return false }
         hasher.update(data: data)
-    }
+        return true
+    }) {}
     return hasher.finalize().map { String(format: "%02x", $0) }.joined()
 }
 
@@ -4606,7 +4660,11 @@ private func exportResourceToOutputs(
     // kept until the run ended: 2.2 GB after a few hours, 38 GB and a frozen Mac
     // overnight on 2026-11-17.
     return try autoreleasepool {
-    let tmp = try exportResourceToTemp(
+    let tmp = try (options.dryRun ? nil : copyVideoFileToTemp(asset: asset, resource: resource,
+                                                              tempDir: options.tempDir,
+                                                              networkAccessAllowed: options.networkAccessAllowed,
+                                                              timeoutSeconds: options.requestTimeoutSeconds))
+        ?? exportResourceToTemp(
         resource,
         tempDir: options.tempDir,
         networkAccessAllowed: options.networkAccessAllowed,
