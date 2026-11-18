@@ -968,7 +968,10 @@ final class PhotoBackupViewModel: ObservableObject {
 
                     // Prefer the core result’s count when it is larger (it includes pipeline-level errors
                     // that might not map 1:1 to log lines), while preserving file-backup errors.
-                    self.errorCount = max(self.errorCount, result.errorCount)
+                    // The exporter counts every failed file; the live counter counts items (one photo can
+                    // fail on its still, its edit settings and its edited render). Only fall back to the
+                    // exporter's number when no error reached the live counter at all.
+                    if self.errorCount == 0 { self.errorCount = result.errorCount }
                     self.failedUploadCount = self.countFailedUploadRecords(in: self.currentFailedUploadsDir)
 
                     if dryRunValue, let plan = result.dryRunPlan {
